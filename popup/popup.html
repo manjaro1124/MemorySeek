@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MemorySeek</title>
   <link rel="stylesheet" href="popup.css">
 </head>
+
 <body>
   <div class="container">
     <!-- 头部 -->
@@ -14,11 +16,12 @@
         <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
           <defs>
             <linearGradient id="g1" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#667eea"/>
-              <stop offset="100%" stop-color="#764ba2"/>
+              <stop offset="0%" stop-color="#667eea" />
+              <stop offset="100%" stop-color="#764ba2" />
             </linearGradient>
           </defs>
-          <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="url(#g1)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="url(#g1)" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round" />
         </svg>
         <h1>MemorySeek</h1>
       </div>
@@ -64,13 +67,14 @@
     <div class="actions">
       <button class="btn btn-primary" id="btnScanPage" title="扫描当前页面的聊天内容">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+          <circle cx="11" cy="11" r="8" />
+          <path d="m21 21-4.35-4.35" />
         </svg>
         扫描当前页
       </button>
       <button class="btn btn-accent" id="btnAutoExtract" title="自动遍历所有对话并提取">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
         </svg>
         全量采集
       </button>
@@ -92,6 +96,10 @@
           <span class="format-icon">&lt;/&gt;</span>
           HTML
         </button>
+        <button class="btn btn-export" data-format="zip">
+          <span class="format-icon">ZIP</span>
+          ZIP (含图片)
+        </button>
       </div>
     </div>
 
@@ -99,7 +107,7 @@
     <div class="footer-actions">
       <button class="btn btn-ghost btn-small" id="btnClearData">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+          <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
         </svg>
         清除数据
       </button>
@@ -108,4 +116,5 @@
 
   <script src="popup.js"></script>
 </body>
+
 </html>

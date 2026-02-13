@@ -1,8 +1,8 @@
-# MemoryKeeper 🧠
+# MemorySeek 🧠
 
 > 豆包聊天记录导出 Chrome 浏览器插件
 
-从 [豆包 (doubao.com)](https://www.doubao.com) 网页版提取并导出所有聊天历史记录，支持 **JSON / Markdown / HTML** 三种格式。
+从 [豆包 (doubao.com)](https://www.doubao.com) 网页版提取并导出所有聊天历史记录，支持 **JSON / Markdown / HTML / ZIP** 三种格式。
 
 ## ✨ 功能特性
 
@@ -10,7 +10,7 @@
 - **DOM 解析提取** — 直接从页面 DOM 中提取当前可见的聊天内容
 - **全量采集** — 一键自动遍历所有历史对话，逐个提取消息
 - **实时监控** — 使用 MutationObserver 实时捕获新消息
-- **多格式导出** — JSON（结构化数据）、Markdown（可读文本）、HTML（带样式预览）
+- **多格式导出** — JSON（结构化数据）、Markdown（可读文本）、HTML（带样式预览）、ZIP（包含原始图片作为文件）
 - **数据持久化** — 采集的数据保存在浏览器本地存储中
 
 ## 🚀 安装方法
@@ -19,7 +19,7 @@
 2. 打开 Chrome 浏览器，访问 `chrome://extensions/`
 3. 开启右上角的"**开发者模式**"
 4. 点击"**加载已解压的扩展程序**"
-5. 选择本项目的根目录（`memorykeeper` 文件夹）
+5. 选择本项目的根目录（`memoryseek` 文件夹）
 6. 插件图标将出现在浏览器工具栏中
 
 ## 📖 使用方法
@@ -27,7 +27,7 @@
 ### 基本操作
 
 1. 在浏览器中打开 [豆包](https://www.doubao.com/chat/)
-2. 点击浏览器工具栏中的 MemoryKeeper 图标
+2. 点击浏览器工具栏中的 MemorySeek 图标
 3. 确认状态显示"**已连接豆包页面**"
 
 ### 采集数据
@@ -44,11 +44,12 @@
 | **JSON** | 程序处理、数据分析 |
 | **Markdown** | 笔记软件导入（Notion/Obsidian 等） |
 | **HTML** | 直接在浏览器中查看，分享 |
+| **ZIP** | 将所有对话打包，包含独立的 **images** 文件夹（推荐） |
 
 ## 🏗️ 项目结构
 
 ```
-memorykeeper/
+memoryseek/
 ├── manifest.json              # Chrome 扩展配置
 ├── popup/                     # 弹窗 UI
 │   ├── popup.html

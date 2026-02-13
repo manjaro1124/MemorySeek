@@ -1,14 +1,152 @@
-/**
- * service-worker.js - Background Service Worker
- * 
- * 职责：
- * 1. 接收来自 Content Script 的数据
- * 2. 使用 chrome.storage.local 存储数据
- * 3. 处理导出请求
- * 4. 管理插件状态
- */
 
-// ==================== 导出工具（内联） ====================
+// 引入 JSZip
+importScripts('jszip.min.js');
+
+/**
+ * 导出为 ZIP 压缩包
+ * 包含：chat_data.json 和 images/ 文件夹
+ */
+async function exportToZip(data) {
+    const zip = new JSZip();
+    const imgFolder = zip.folder("images");
+    const urlMap = new Map(); // originalUrl -> localPath
+
+    // 辅助函数：下载图片并添加到 ZIP
+    async function processImage(url) {
+        if (!url) return url;
+        if (urlMap.has(url)) return urlMap.get(url);
+
+        let blob = null;
+        let ext = '.png';
+
+        try {
+            if (url.startsWith('http')) {
+                const resp = await fetch(url);
+                if (!resp.ok) return url;
+                blob = await resp.blob();
+            } else if (url.startsWith('data:image/')) {
+                const resp = await fetch(url);
+                blob = await resp.blob();
+            } else {
+                return url;
+            }
+
+            // 确定扩展名
+            if (blob.type === 'image/jpeg') ext = '.jpg';
+            else if (blob.type === 'image/png') ext = '.png';
+            else if (blob.type === 'image/gif') ext = '.gif';
+            else if (blob.type === 'image/webp') ext = '.webp';
+            else {
+                // 尝试从 URL 获取
+                const match = url.match(/\.(jpg|jpeg|png|gif|webp)/i);
+                if (match) ext = match[0];
+            }
+
+            // 使用 UUID 作为文件名
+            const uuid = self.crypto && self.crypto.randomUUID
+                ? self.crypto.randomUUID()
+                : `img_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+            const filename = `${uuid}${ext}`;
+
+            imgFolder.file(filename, blob);
+            const localPath = `images/${filename}`;
+            urlMap.set(url, localPath);
+            return localPath;
+        } catch (e) {
+            console.warn('[MemorySeek] 图片处理失败:', url, e);
+            // 失败时保留原链接（可能是 base64 或 http）
+            return url;
+        }
+    }
+
+    // 遍历所有对话，处理图片
+    const conversations = data.conversations || [];
+    for (const conv of conversations) {
+        for (const msg of (conv.messages || [])) {
+            // 处理 images 数组
+            if (msg.images && msg.images.length > 0) {
+                const newImages = [];
+                for (const url of msg.images) {
+                    const localPath = await processImage(url);
+                    newImages.push(localPath);
+                }
+                msg.images = newImages;
+            }
+
+            // 处理 content 中的 Markdown 图片链接
+            if (msg.content) {
+                // 简单的字符串替换（可能会误伤，但在当前场景下可接受）
+                // 更好的方式是正则替换，但 URL 均已在 urlMap 中
+                for (const [url, localPath] of urlMap.entries()) {
+                    if (msg.content.includes(url)) {
+                        msg.content = msg.content.replaceAll(url, localPath);
+                    }
+                }
+            }
+        }
+    }
+
+    // 添加 JSON 文件
+    zip.file("chat_data.json", JSON.stringify(data, null, 2));
+
+    // 生成 ZIP
+    const zipBlob = await zip.generateAsync({ type: "blob" });
+
+    // 转为 Data URI (Service Worker 中无法使用 createObjectURL)
+    return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(zipBlob);
+    });
+}
+
+/**
+ * 处理导出请求
+ */
+async function handleExportData(format) {
+    const data = await getStoredData();
+    if (!data.conversations || data.conversations.length === 0) {
+        throw new Error('没有可导出的数据');
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    let filename = `doubao_chat_history_${timestamp}`;
+    let content = '';
+
+    if (format === 'json') {
+        content = 'data:application/json;charset=utf-8,' + encodeURIComponent(exportToJSON(data));
+        filename += '.json';
+    } else if (format === 'md') {
+        content = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(exportToMarkdown(data));
+        filename += '.md';
+    } else if (format === 'html') {
+        const html = exportToHTML(data);
+        content = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+        filename += '.html';
+    } else if (format === 'zip') {
+        // ZIP 导出特殊处理
+        content = await exportToZip(data); // 已经是 Data URI
+        filename += '.zip';
+    } else {
+        throw new Error('不支持的导出格式');
+    }
+
+    // 下载文件
+    return new Promise((resolve, reject) => {
+        chrome.downloads.download({
+            url: content,
+            filename: `MemorySeek_Export/${filename}`, // 放入子目录
+            saveAs: false
+        }, (downloadId) => {
+            if (chrome.runtime.lastError) {
+                reject(chrome.runtime.lastError);
+            } else {
+                resolve({ success: true, filename });
+            }
+        });
+    });
+}
 
 function exportToJSON(data) {
     return JSON.stringify(data, null, 2);
@@ -322,47 +460,54 @@ async function handleMessage(message, sender) {
 
         case 'EXPORT_DATA': {
             const format = message.format || 'json';
-            const data = await getStoredData();
+            const rawData = await getStoredData();
 
             const exportData = {
                 exportedAt: new Date().toISOString(),
-                conversations: Object.values(data.conversations),
-                stats: data.stats,
+                conversations: Object.values(rawData.conversations),
+                stats: rawData.stats,
             };
 
-            // 下载所有图片并转为 base64
-            await downloadAllImages(exportData.conversations);
-
             let content, mimeType, extension;
-            switch (format) {
-                case 'markdown':
-                    content = exportToMarkdown(exportData);
-                    mimeType = 'text/markdown';
-                    extension = 'md';
-                    break;
-                case 'html':
-                    content = exportToHTML(exportData);
-                    mimeType = 'text/html';
-                    extension = 'html';
-                    break;
-                case 'json':
-                default:
-                    content = exportToJSON(exportData);
-                    mimeType = 'application/json';
-                    extension = 'json';
-                    break;
+            let isDataUrl = false;
+
+            if (format === 'zip') {
+                content = await exportToZip(exportData); // Returns Data URL
+                mimeType = 'application/zip';
+                extension = 'zip';
+                isDataUrl = true;
+            } else {
+                // Non-ZIP formats: Embed images as Base64
+                await downloadAllImages(exportData.conversations);
+
+                switch (format) {
+                    case 'markdown':
+                        content = exportToMarkdown(exportData);
+                        mimeType = 'text/markdown';
+                        extension = 'md';
+                        break;
+                    case 'html':
+                        content = exportToHTML(exportData);
+                        mimeType = 'text/html';
+                        extension = 'html';
+                        break;
+                    case 'json':
+                    default:
+                        content = exportToJSON(exportData);
+                        mimeType = 'application/json';
+                        extension = 'json';
+                        break;
+                }
             }
 
             const dateStr = new Date().toISOString().slice(0, 10);
             const filename = `doubao_chat_${dateStr}.${extension}`;
 
-            // 使用 data URL（Service Worker 中无 Blob/URL.createObjectURL）
-            const base64 = btoa(unescape(encodeURIComponent(content)));
-            const dataUrl = `data:${mimeType};base64,${base64}`;
+            const dataUrl = isDataUrl ? content : `data:${mimeType};base64,${btoa(unescape(encodeURIComponent(content)))}`;
 
             await chrome.downloads.download({
                 url: dataUrl,
-                filename: filename,
+                filename: `MemorySeek_Export/${filename}`,
                 saveAs: true,
             });
 

@@ -28,12 +28,12 @@ body {
   width: 200%;
   height: 200%;
   background: radial-gradient(circle at 70% 20%, rgba(102, 126, 234, 0.08) 0%, transparent 50%),
-              radial-gradient(circle at 30% 80%, rgba(118, 75, 162, 0.06) 0%, transparent 50%);
+    radial-gradient(circle at 30% 80%, rgba(118, 75, 162, 0.06) 0%, transparent 50%);
   pointer-events: none;
   z-index: 0;
 }
 
-.container > * {
+.container>* {
   position: relative;
   z-index: 1;
 }
@@ -110,8 +110,15 @@ body {
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
 }
 
 /* ==================== Stats Grid ==================== */
@@ -252,7 +259,7 @@ body {
 
 .export-buttons {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
 }
 
