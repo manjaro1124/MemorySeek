@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "MemorySeek - 豆包聊天记录导出",
+  "version": "1.0.0",
+  "description": "从豆包(doubao.com)提取并导出所有聊天历史记录，支持 JSON / Markdown / HTML 格式",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "downloads"
+  ],
+  "host_permissions": [
+    "*://*.doubao.com/*",
+    "*://*.byteimg.com/*"
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "MemorySeek"
+  },
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.doubao.com/*"
+      ],
+      "js": [
+        "content/interceptor.js",
+        "content/extractor.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "content/injected.js"
+      ],
+      "matches": [
+        "*://*.doubao.com/*"
+      ]
+    }
+  ]
+}
