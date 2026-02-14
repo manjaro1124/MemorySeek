@@ -89,7 +89,28 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (response && response.success) {
                 const data = response.data;
                 const msgNum = data.currentMessages?.length || 0;
-                showToast(`扫描完成: 发现 ${msgNum} 条消息`);
+
+                // 构造对话数据并保存
+                if (msgNum > 0) {
+                    const convData = {
+                        title: data.pageTitle || '当前对话',
+                        messages: data.currentMessages,
+                        timestamp: Date.now()
+                    };
+
+                    // 发送给 background 保存
+                    await chrome.runtime.sendMessage({
+                        action: 'SAVE_CHAT_DATA',
+                        data: [convData]
+                    });
+
+                    showToast(`扫描保存完成: ${msgNum} 条消息`);
+                    // 刷新统计
+                    await refreshStats();
+                } else {
+                    showToast('未发现消息');
+                }
+
                 setStatus('active', '扫描完成');
             } else {
                 showToast('扫描失败', true);

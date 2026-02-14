@@ -1,158 +1,23 @@
+/**
+ * service-worker.js - Background Service Worker
+ * 
+ * 职责：
+ * 1. 接收来自 Content Script 的数据
+ * 2. 使用 chrome.storage.local 存储数据
+ * 3. 处理导出请求 (统一导出为 ZIP)
+ * 4. 管理插件状态
+ */
 
 // 引入 JSZip
 importScripts('jszip.min.js');
 
-/**
- * 导出为 ZIP 压缩包
- * 包含：chat_data.json 和 images/ 文件夹
- */
-async function exportToZip(data) {
-    const zip = new JSZip();
-    const imgFolder = zip.folder("images");
-    const urlMap = new Map(); // originalUrl -> localPath
+// ==================== 导出格式生成函数 ====================
 
-    // 辅助函数：下载图片并添加到 ZIP
-    async function processImage(url) {
-        if (!url) return url;
-        if (urlMap.has(url)) return urlMap.get(url);
-
-        let blob = null;
-        let ext = '.png';
-
-        try {
-            if (url.startsWith('http')) {
-                const resp = await fetch(url);
-                if (!resp.ok) return url;
-                blob = await resp.blob();
-            } else if (url.startsWith('data:image/')) {
-                const resp = await fetch(url);
-                blob = await resp.blob();
-            } else {
-                return url;
-            }
-
-            // 确定扩展名
-            if (blob.type === 'image/jpeg') ext = '.jpg';
-            else if (blob.type === 'image/png') ext = '.png';
-            else if (blob.type === 'image/gif') ext = '.gif';
-            else if (blob.type === 'image/webp') ext = '.webp';
-            else {
-                // 尝试从 URL 获取
-                const match = url.match(/\.(jpg|jpeg|png|gif|webp)/i);
-                if (match) ext = match[0];
-            }
-
-            // 使用 UUID 作为文件名
-            const uuid = self.crypto && self.crypto.randomUUID
-                ? self.crypto.randomUUID()
-                : `img_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-
-            const filename = `${uuid}${ext}`;
-
-            imgFolder.file(filename, blob);
-            const localPath = `images/${filename}`;
-            urlMap.set(url, localPath);
-            return localPath;
-        } catch (e) {
-            console.warn('[MemorySeek] 图片处理失败:', url, e);
-            // 失败时保留原链接（可能是 base64 或 http）
-            return url;
-        }
-    }
-
-    // 遍历所有对话，处理图片
-    const conversations = data.conversations || [];
-    for (const conv of conversations) {
-        for (const msg of (conv.messages || [])) {
-            // 处理 images 数组
-            if (msg.images && msg.images.length > 0) {
-                const newImages = [];
-                for (const url of msg.images) {
-                    const localPath = await processImage(url);
-                    newImages.push(localPath);
-                }
-                msg.images = newImages;
-            }
-
-            // 处理 content 中的 Markdown 图片链接
-            if (msg.content) {
-                // 简单的字符串替换（可能会误伤，但在当前场景下可接受）
-                // 更好的方式是正则替换，但 URL 均已在 urlMap 中
-                for (const [url, localPath] of urlMap.entries()) {
-                    if (msg.content.includes(url)) {
-                        msg.content = msg.content.replaceAll(url, localPath);
-                    }
-                }
-            }
-        }
-    }
-
-    // 添加 JSON 文件
-    zip.file("chat_data.json", JSON.stringify(data, null, 2));
-
-    // 生成 ZIP
-    const zipBlob = await zip.generateAsync({ type: "blob" });
-
-    // 转为 Data URI (Service Worker 中无法使用 createObjectURL)
-    return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result);
-        reader.readAsDataURL(zipBlob);
-    });
-}
-
-/**
- * 处理导出请求
- */
-async function handleExportData(format) {
-    const data = await getStoredData();
-    if (!data.conversations || data.conversations.length === 0) {
-        throw new Error('没有可导出的数据');
-    }
-
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    let filename = `doubao_chat_history_${timestamp}`;
-    let content = '';
-
-    if (format === 'json') {
-        content = 'data:application/json;charset=utf-8,' + encodeURIComponent(exportToJSON(data));
-        filename += '.json';
-    } else if (format === 'md') {
-        content = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(exportToMarkdown(data));
-        filename += '.md';
-    } else if (format === 'html') {
-        const html = exportToHTML(data);
-        content = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
-        filename += '.html';
-    } else if (format === 'zip') {
-        // ZIP 导出特殊处理
-        content = await exportToZip(data); // 已经是 Data URI
-        filename += '.zip';
-    } else {
-        throw new Error('不支持的导出格式');
-    }
-
-    // 下载文件
-    return new Promise((resolve, reject) => {
-        chrome.downloads.download({
-            url: content,
-            filename: `MemorySeek_Export/${filename}`, // 放入子目录
-            saveAs: false
-        }, (downloadId) => {
-            if (chrome.runtime.lastError) {
-                reject(chrome.runtime.lastError);
-            } else {
-                resolve({ success: true, filename });
-            }
-        });
-    });
-}
-
-function exportToJSON(data) {
+function generateJSON(data) {
     return JSON.stringify(data, null, 2);
 }
 
-function exportToMarkdown(data) {
+function generateMarkdown(data) {
     let md = '';
     const exportDate = new Date().toLocaleString('zh-CN');
 
@@ -171,10 +36,16 @@ function exportToMarkdown(data) {
                 const roleLabel = msg.role === 'user' ? '🧑 **我**' : '🤖 **豆包**';
                 md += `### ${roleLabel}\n\n`;
                 md += `${msg.content}\n\n`;
-                // 追加图片
+                // 追加图片 (此时 msg.content 里的图片链接和 msg.images 里的链接应该已经被替换为相对路径了)
+                // 这里只额外显示存储在 images 数组但未在文中显示的图片（如果有的话）
+                // 为简化逻辑，并在 Markdwon 中直观显示，我们假设 content 中的图片已经替换好。
+                // 如果 msg.images 有图片但 content 没引用，可以追加显示：
                 if (msg.images && msg.images.length > 0) {
+                    // 简单去重：检查 content 是否已经包含了该图片路径
                     msg.images.forEach((url, i) => {
-                        md += `![图片${i + 1}](${url})\n\n`;
+                        if (!msg.content || !msg.content.includes(url)) {
+                            md += `![图片${i + 1}](${url})\n\n`;
+                        }
                     });
                 }
             });
@@ -188,7 +59,7 @@ function exportToMarkdown(data) {
     return md;
 }
 
-function exportToHTML(data) {
+function generateHTML(data) {
     const exportDate = new Date().toLocaleString('zh-CN');
     const conversations = data.conversations || [{ title: data.pageTitle || '对话', messages: data.currentMessages || [] }];
 
@@ -200,16 +71,32 @@ function exportToHTML(data) {
     const conversationsHTML = conversations.map((conv, idx) => {
         const messagesHTML = (conv.messages || []).map(msg => {
             const isUser = msg.role === 'user';
-            const escapedContent = escapeHtml(msg.content).replace(/\n/g, '<br>');
-            let imagesHtml = '';
+            // 此时 msg.content 中的图片路径已经是相对路径 "images/..."
+            // 将 Markdown 图片语法 ![xxx](yyy) 转为 HTML img 标签
+            // 简单处理：先转义 HTML，再把 Markdown 图片标记替换回来
+            let contentHtml = escapeHtml(msg.content).replace(/\n/g, '<br>');
+
+            // 替换 Markdown 图片语法 ![alt](src) 为 <img src="src">
+            // 注意：因为已转义，![ 变成了 ![  ] 变成了 ] (其实 [] 不会被转义除非特殊处理，escapeHtml 只转义 & < > ")
+            // 这里的正则需要匹配未转义的 Markdown 链接结构
+            contentHtml = contentHtml.replace(/!\[(.*?)\]\((.*?)\)/g, (match, alt, src) => {
+                return `<br><img src="${src}" alt="${alt}" style="max-width:100%;border-radius:8px;margin:8px 0"><br>`;
+            });
+
+            // 处理 msg.images 中未在文中显示的图片
+            let extraImagesHtml = '';
             if (msg.images && msg.images.length > 0) {
-                imagesHtml = msg.images.map(url =>
-                    `<div style="margin-top:8px"><img src="${escapeHtml(url)}" style="max-width:100%;border-radius:8px" loading="lazy"></div>`
-                ).join('');
+                msg.images.forEach(url => {
+                    // 如果文中没包含该图片（简单判断）
+                    if (!msg.content || !msg.content.includes(url)) {
+                        extraImagesHtml += `<div style="margin-top:8px"><img src="${url}" style="max-width:100%;border-radius:8px" loading="lazy"></div>`;
+                    }
+                });
             }
+
             return `<div class="message ${isUser ? 'user' : 'assistant'}">
           <div class="role-badge">${isUser ? '我' : '豆包'}</div>
-          <div class="bubble">${escapedContent}${imagesHtml}</div>
+          <div class="bubble">${contentHtml}${extraImagesHtml}</div>
         </div>`;
         }).join('\n');
 
@@ -227,316 +114,294 @@ function exportToHTML(data) {
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:#0f0f1a;color:#e0e0e0;line-height:1.6;padding:24px}
-    .header{text-align:center;padding:32px 0;margin-bottom:32px;border-bottom:1px solid rgba(255,255,255,0.1)}
-    .header h1{font-size:28px;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px}
-    .header .meta{color:#888;font-size:14px}
-    .conversation{max-width:800px;margin:0 auto 40px;background:rgba(255,255,255,0.03);border-radius:16px;padding:24px;border:1px solid rgba(255,255,255,0.06)}
-    .conv-title{font-size:18px;color:#a78bfa;margin-bottom:20px;padding-bottom:12px;border-bottom:1px solid rgba(255,255,255,0.08)}
-    .message{display:flex;gap:12px;margin-bottom:16px;align-items:flex-start}
+    .container{max-width:800px;margin:0 auto}
+    .conversation{background:#1e1e2d;border-radius:12px;padding:24px;margin-bottom:24px;box-shadow:0 4px 12px rgba(0,0,0,0.2)}
+    .conv-title{font-size:18px;margin-bottom:20px;color:#fff;border-bottom:1px solid #333;padding-bottom:12px}
+    .message{display:flex;margin-bottom:20px;gap:12px}
     .message.user{flex-direction:row-reverse}
-    .role-badge{flex-shrink:0;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600}
-    .message.user .role-badge{background:linear-gradient(135deg,#667eea,#764ba2);color:white}
-    .message.assistant .role-badge{background:linear-gradient(135deg,#10b981,#059669);color:white}
-    .bubble{max-width:75%;padding:12px 16px;border-radius:16px;font-size:14px;line-height:1.7;word-break:break-word}
-    .message.user .bubble{background:linear-gradient(135deg,#667eea,#764ba2);color:white;border-bottom-right-radius:4px}
-    .message.assistant .bubble{background:rgba(255,255,255,0.08);color:#e0e0e0;border-bottom-left-radius:4px}
-    .empty{color:#666;text-align:center;padding:20px;font-style:italic}
+    .role-badge{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:bold;flex-shrink:0}
+    .message.user .role-badge{background:#4caf50;color:#fff}
+    .message.assistant .role-badge{background:#2196f3;color:#fff}
+    .bubble{background:#2b2b3c;padding:12px 16px;border-radius:12px;max-width:80%;word-wrap:break-word}
+    .message.user .bubble{background:#2e3b4e}
+    img{max-width:100%;height:auto;display:block}
+    .empty{text-align:center;color:#666;font-style:italic}
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>📝 豆包聊天记录</h1>
-    <div class="meta">导出时间: ${exportDate} | 共 ${conversations.length} 个对话</div>
+  <div class="container">
+    ${conversationsHTML}
   </div>
-  ${conversationsHTML}
 </body>
 </html>`;
 }
+
+// ==================== 核心导出逻辑 ====================
+
+/**
+ * 统一 ZIP 导出函数
+ * @param {Object} data 原始数据
+ * @param {string} format 'json' | 'md' | 'html' | 'zip' (全部)
+ */
+async function exportToZip(data, format) {
+    const zip = new JSZip();
+    const imgFolder = zip.folder("images");
+    const urlMap = new Map(); // originalUrl -> localPath
+
+    // 1. 深度拷贝数据，以免修改原始存储
+    const processedData = JSON.parse(JSON.stringify(data));
+    const conversations = processedData.conversations || [];
+
+    // 2. 扫描所有图片，下载并建立映射
+    // 辅助函数：下载图片并添加到 ZIP
+    async function downloadAndMapImage(url) {
+        if (!url || !url.startsWith('http')) return url; // 忽略 base64 或无效 url
+        if (urlMap.has(url)) return urlMap.get(url);
+
+        try {
+            const resp = await fetch(url);
+            if (!resp.ok) return url;
+
+            const blob = await resp.blob();
+            // 获取扩展名，默认为 .png
+            let ext = '.png';
+            const mime = blob.type;
+            if (mime === 'image/jpeg') ext = '.jpg';
+            else if (mime === 'image/gif') ext = '.gif';
+            else if (mime === 'image/webp') ext = '.webp';
+            else {
+                // 尝试从 URL 获取
+                const match = url.match(/\.(jpg|jpeg|png|gif|webp)/i);
+                if (match) ext = match[0];
+            }
+
+            // 生成随机文件名确保唯一
+            const filename = `img_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}${ext}`;
+
+            imgFolder.file(filename, blob);
+            const localPath = `images/${filename}`; // 相对路径
+            urlMap.set(url, localPath);
+            return localPath;
+        } catch (e) {
+            console.warn('[MemorySeek] Image download failed:', url, e);
+            return url;
+        }
+    }
+
+    // 收集所有需要下载的 URL
+    const allUrls = new Set();
+    for (const conv of conversations) {
+        if (conv.messages) {
+            for (const msg of conv.messages) {
+                if (msg.images && msg.images.length > 0) {
+                    msg.images.forEach(u => allUrls.add(u));
+                }
+            }
+        }
+    }
+
+    // 并发下载 (限制并发数防止网络堵塞，这里简单起见直接 Promise.all，量大时可能需控制)
+    // 实际上浏览器对同域有并发限制，这里是由 Service Worker 发起 fetch
+    const urlList = Array.from(allUrls);
+    console.log(`[MemorySeek] 开始下载 ${urlList.length} 张图片...`);
+
+    // 简单分批处理，每次 5 张
+    for (let i = 0; i < urlList.length; i += 5) {
+        const batch = urlList.slice(i, i + 5);
+        await Promise.all(batch.map(u => downloadAndMapImage(u)));
+    }
+
+    // 3. 替换 processedData 中的图片链接为本地相对路径
+    for (const conv of conversations) {
+        if (conv.messages) {
+            for (const msg of conv.messages) {
+                // 替换 images 数组
+                if (msg.images && msg.images.length > 0) {
+                    msg.images = msg.images.map(url => urlMap.get(url) || url);
+                }
+                // 替换 content 中的 Markdown 链接
+                if (msg.content) {
+                    // 遍历 map 进行替换。
+                    // 注意：这可能效率较低，更好的是用正则匹配 content 里的 url
+                    // 但考虑到已知的 url 都在 urlMap 里，直接替换也是可行的
+                    // 为避免替换部分重叠的 URL，我们... 其实 URL 通常较长且唯一
+                    urlMap.forEach((localPath, originalUrl) => {
+                        if (msg.content.includes(originalUrl)) {
+                            msg.content = msg.content.split(originalUrl).join(localPath);
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    // 4. 根据 format 生成文件放入 ZIP
+    if (format === 'json' || format === 'zip') {
+        zip.file("chat_data.json", generateJSON(processedData));
+    }
+    if (format === 'md' || format === 'zip') {
+        zip.file("chat_history.md", generateMarkdown(processedData));
+    }
+    if (format === 'html' || format === 'zip') {
+        zip.file("chat_history.html", generateHTML(processedData));
+    }
+
+    // 5. 生成 ZIP Blob
+    const content = await zip.generateAsync({ type: "blob" });
+
+    // 转 Data URI 以便下载
+    return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(content);
+    });
+}
+
+
+/**
+ * 处理主导出入口
+ */
+async function handleExportData(format) {
+    const data = await getStoredData();
+    if (!data.conversations || data.conversations.length === 0) {
+        throw new Error('没有可导出的数据');
+    }
+
+    // 无论用户选什么格式，都走 exportToZip，只是内容不同
+    const zipDataURI = await exportToZip(data, format); // format: json/md/html/zip
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    // 文件名包含格式标识，但后缀总是 .zip
+    const filename = `MemorySeek_${format.toUpperCase()}_${timestamp}.zip`;
+
+    // 下载
+    return new Promise((resolve, reject) => {
+        chrome.downloads.download({
+            url: zipDataURI,
+            filename: `MemorySeek_Export/${filename}`, // 下载到 MemorySeek_Export 文件夹下
+            saveAs: false // 不弹窗，直接下
+        }, (downloadId) => {
+            if (chrome.runtime.lastError) {
+                reject(chrome.runtime.lastError);
+            } else {
+                resolve({ success: true, filename });
+            }
+        });
+    });
+}
+
 
 // ==================== 数据存储 ====================
 
 const STORAGE_KEY = 'memorykeeper_data';
 
-async function getStoredData() {
-    const result = await chrome.storage.local.get(STORAGE_KEY);
-    return result[STORAGE_KEY] || {
-        conversations: {},
-        apiCaptures: [],
-        stats: { totalConversations: 0, totalMessages: 0, lastUpdated: null }
-    };
-}
-
-async function saveData(data) {
-    await chrome.storage.local.set({ [STORAGE_KEY]: data });
-}
-
-async function mergeConversationData(newConversations) {
-    const stored = await getStoredData();
-
-    for (const conv of newConversations) {
-        const id = conv.conversationId || conv.id || `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-        if (!stored.conversations[id] ||
-            (conv.messages && conv.messages.length > (stored.conversations[id].messages || []).length)) {
-            stored.conversations[id] = {
-                id: id,
-                title: conv.title || stored.conversations[id]?.title || '未命名对话',
-                messages: conv.messages || [],
-                updatedAt: Date.now(),
-            };
-        }
-    }
-
-    const convList = Object.values(stored.conversations);
-    stored.stats = {
-        totalConversations: convList.length,
-        totalMessages: convList.reduce((sum, c) => sum + (c.messages?.length || 0), 0),
-        lastUpdated: Date.now(),
-    };
-
-    await saveData(stored);
-    return stored.stats;
-}
-
-async function storeApiCapture(capture) {
-    const stored = await getStoredData();
-    stored.apiCaptures.push({
-        ...capture,
-        storedAt: Date.now(),
-    });
-    if (stored.apiCaptures.length > 500) {
-        stored.apiCaptures = stored.apiCaptures.slice(-500);
-    }
-    await saveData(stored);
-}
-
-// ==================== 图片下载 ====================
-
-/**
- * 将图片 URL fetch 后转为 base64 data URI
- */
-async function fetchImageAsBase64(url) {
-    try {
-        const resp = await fetch(url);
-        if (!resp.ok) return null;
-
-        const blob = await resp.blob();
-        // 在 service worker 中用 FileReader 的替代方案
-        const arrayBuffer = await blob.arrayBuffer();
-        const bytes = new Uint8Array(arrayBuffer);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i++) {
-            binary += String.fromCharCode(bytes[i]);
-        }
-        const base64 = btoa(binary);
-        const mimeType = blob.type || 'image/png';
-        return `data:${mimeType};base64,${base64}`;
-    } catch (e) {
-        console.warn('[MemorySeek] 图片下载失败:', url, e);
-        return null;
-    }
-}
-
-/**
- * 下载所有对话中的图片，将 URL 替换为 base64
- */
-async function downloadAllImages(conversations) {
-    // 收集所有图片 URL（去重）
-    const urlMap = new Map(); // url -> base64
-
-    for (const conv of conversations) {
-        for (const msg of (conv.messages || [])) {
-            if (msg.images && msg.images.length > 0) {
-                for (const url of msg.images) {
-                    if (!urlMap.has(url)) {
-                        urlMap.set(url, null); // 占位
-                    }
-                }
-            }
-        }
-    }
-
-    if (urlMap.size === 0) return;
-
-    // 并发下载（最多 5 个同时）
-    const urls = Array.from(urlMap.keys());
-    const batchSize = 5;
-    for (let i = 0; i < urls.length; i += batchSize) {
-        const batch = urls.slice(i, i + batchSize);
-        const results = await Promise.all(batch.map(url => fetchImageAsBase64(url)));
-        batch.forEach((url, idx) => {
-            if (results[idx]) {
-                urlMap.set(url, results[idx]);
-            }
+function getStoredData() {
+    return new Promise((resolve) => {
+        chrome.storage.local.get([STORAGE_KEY], (result) => {
+            resolve(result[STORAGE_KEY] || {});
         });
-    }
+    });
+}
 
-    // 替换消息中的图片 URL
-    for (const conv of conversations) {
-        for (const msg of (conv.messages || [])) {
-            if (msg.images && msg.images.length > 0) {
-                msg.images = msg.images.map(url => urlMap.get(url) || url);
-            }
-            // 同时替换 content 中的 ![图片](url)
-            if (msg.content) {
-                for (const [url, base64] of urlMap.entries()) {
-                    if (base64 && msg.content.includes(url)) {
-                        msg.content = msg.content.replaceAll(url, base64);
-                    }
+function saveData(data) {
+    return new Promise((resolve) => {
+        chrome.storage.local.set({ [STORAGE_KEY]: data }, () => {
+            resolve();
+        });
+    });
+}
+
+/**
+ * 增量合并对话数据
+ */
+async function mergeConversationData(newConversations) {
+    const data = await getStoredData();
+    const existingConvs = data.conversations || [];
+
+    let addedCount = 0;
+    let updatedCount = 0;
+
+    for (const newConv of newConversations) {
+        // 尝试通过 title 匹配 (豆包没 ID，暂时用 Title)
+        // 改进：如果正好是当前正在浏览的，可能 title 变了？暂且只用 title 匹配
+        const index = existingConvs.findIndex(c => c.title === newConv.title);
+
+        if (index !== -1) {
+            // 更新：合并消息
+            const existConv = existingConvs[index];
+            // 简单的去重合并：根据消息内容和角色
+            const mergedMsgs = [...existConv.messages];
+
+            newConv.messages.forEach(newMsg => {
+                const isExist = mergedMsgs.some(m =>
+                    m.content === newMsg.content && m.role === newMsg.role
+                );
+                if (!isExist) {
+                    mergedMsgs.push(newMsg);
                 }
-            }
+            });
+
+            // 按 timestamp 排序
+            mergedMsgs.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+            existingConvs[index].messages = mergedMsgs;
+            updatedCount++;
+        } else {
+            // 新增
+            existingConvs.push(newConv);
+            addedCount++;
         }
     }
+
+    data.conversations = existingConvs;
+    data.lastUpdated = Date.now();
+
+    // 更新总计数据
+    data.stats = {
+        totalConversations: existingConvs.length,
+        totalMessages: existingConvs.reduce((sum, c) => sum + (c.messages?.length || 0), 0),
+        lastUpdated: data.lastUpdated
+    };
+
+    await saveData(data);
+    return { added: addedCount, updated: updatedCount, total: existingConvs.length };
 }
+
 
 // ==================== 消息处理 ====================
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    handleMessage(message, sender).then(response => {
-        sendResponse(response);
-    }).catch(err => {
-        sendResponse({ success: false, error: err.message });
-    });
+    // 异步处理需要返回 true
+    handleMessage(message, sender)
+        .then(response => sendResponse(response))
+        .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
 });
 
 async function handleMessage(message, sender) {
     switch (message.action) {
-        case 'API_DATA_CAPTURED':
-            await storeApiCapture(message.payload);
-            return { success: true };
-
-        case 'DOM_DATA_EXTRACTED': {
-            const payload = message.payload;
-            if (payload.currentMessages && payload.currentMessages.length > 0) {
-                const stats = await mergeConversationData([{
-                    id: extractConvIdFromUrl(payload.currentUrl),
-                    title: payload.pageTitle,
-                    messages: payload.currentMessages,
-                }]);
-                return { success: true, stats };
-            }
-            return { success: true };
-        }
-
-        case 'ALL_CONVERSATIONS_EXTRACTED': {
-            const stats = await mergeConversationData(message.payload.conversations);
+        case 'SAVE_CHAT_DATA':
+            // 保存 content script 提取的数据
+            const stats = await mergeConversationData(message.data);
             return { success: true, stats };
-        }
 
-        case 'NEW_MESSAGES_DETECTED': {
-            const msgs = message.payload.messages;
-            if (msgs && msgs.length > 0) {
-                const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-                const url = tabs[0]?.url || '';
-                const convId = extractConvIdFromUrl(url);
-                await mergeConversationData([{
-                    id: convId,
-                    title: '对话',
-                    messages: msgs,
-                }]);
-            }
-            return { success: true };
-        }
-
-        case 'EXTRACT_STATUS':
-            try {
-                await chrome.runtime.sendMessage({
-                    action: 'EXTRACT_STATUS_UPDATE',
-                    payload: message.payload
-                });
-            } catch (e) { /* popup 可能未打开 */ }
-            return { success: true };
-
-        case 'GET_STATS': {
+        case 'GET_STATS':
             const data = await getStoredData();
-            return { success: true, stats: data.stats };
-        }
+            return { success: true, stats: data.stats || {} };
 
-        case 'GET_ALL_DATA': {
-            const data = await getStoredData();
-            return { success: true, data };
-        }
+        case 'EXPORT_DATA':
+            // 导出数据
+            return await handleExportData(message.format);
 
-        case 'EXPORT_DATA': {
-            const format = message.format || 'json';
-            const rawData = await getStoredData();
-
-            const exportData = {
-                exportedAt: new Date().toISOString(),
-                conversations: Object.values(rawData.conversations),
-                stats: rawData.stats,
-            };
-
-            let content, mimeType, extension;
-            let isDataUrl = false;
-
-            if (format === 'zip') {
-                content = await exportToZip(exportData); // Returns Data URL
-                mimeType = 'application/zip';
-                extension = 'zip';
-                isDataUrl = true;
-            } else {
-                // Non-ZIP formats: Embed images as Base64
-                await downloadAllImages(exportData.conversations);
-
-                switch (format) {
-                    case 'markdown':
-                        content = exportToMarkdown(exportData);
-                        mimeType = 'text/markdown';
-                        extension = 'md';
-                        break;
-                    case 'html':
-                        content = exportToHTML(exportData);
-                        mimeType = 'text/html';
-                        extension = 'html';
-                        break;
-                    case 'json':
-                    default:
-                        content = exportToJSON(exportData);
-                        mimeType = 'application/json';
-                        extension = 'json';
-                        break;
-                }
-            }
-
-            const dateStr = new Date().toISOString().slice(0, 10);
-            const filename = `doubao_chat_${dateStr}.${extension}`;
-
-            const dataUrl = isDataUrl ? content : `data:${mimeType};base64,${btoa(unescape(encodeURIComponent(content)))}`;
-
-            await chrome.downloads.download({
-                url: dataUrl,
-                filename: `MemorySeek_Export/${filename}`,
-                saveAs: true,
-            });
-
-            return { success: true, filename };
-        }
-
-        case 'CLEAR_DATA': {
-            await chrome.storage.local.remove(STORAGE_KEY);
+        case 'CLEAR_DATA':
+            await saveData({});
             return { success: true };
-        }
 
         default:
-            return { success: false, error: `未知操作: ${message.action}` };
+            // 其它消息忽略或由 popup 处理
+            return { success: false, error: 'Unknown action' };
     }
 }
 
-function extractConvIdFromUrl(url) {
-    if (!url) return 'unknown';
-    try {
-        const u = new URL(url);
-        const pathMatch = u.pathname.match(/\/chat\/([^\/]+)/);
-        if (pathMatch) return pathMatch[1];
-        const paramId = u.searchParams.get('conversation_id') || u.searchParams.get('id');
-        if (paramId) return paramId;
-        return u.pathname.replace(/\//g, '_') || 'unknown';
-    } catch (e) {
-        return 'unknown';
-    }
-}
 
 // ==================== 安装事件 ====================
 
